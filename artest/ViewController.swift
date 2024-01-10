@@ -11,6 +11,7 @@ class ViewController: UIViewController, ARSCNViewDelegate {
     @IBOutlet weak var textHeight: UITextField!
     @IBOutlet weak var textObject: UITextField!
     
+    
     // 전역변수
     struct wall {
         var anchor: ARAnchor
@@ -26,6 +27,10 @@ class ViewController: UIViewController, ARSCNViewDelegate {
 
     ///for angle v2
     var planeAnchors = [ARPlaneAnchor]()
+    
+    var lastSlopeCalculationTime: TimeInterval = 0
+    let slopeCalculationInterval: TimeInterval = 1 // 1秒ごとにスロープを計算
+
 
     
     
@@ -34,8 +39,7 @@ class ViewController: UIViewController, ARSCNViewDelegate {
         
         // 30秒ごとにnodeRemoverを呼び出すタイマーを設定
         Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
-            self?.nodeRemover(interval: 15)
-        }
+            self?.nodeRemover(interval: 15)}
 //        // タイマーを設定し、3秒ごとに配列の要素数をログに出力
 //        Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
 //            guard let self = self else { return }
@@ -64,9 +68,7 @@ class ViewController: UIViewController, ARSCNViewDelegate {
             let point = CGPoint(x: view.bounds.midX, y: y)
             overlayPoints.append(point)
         }
-
         addOverlayViews(points: overlayPoints)
-        
     }
     
     
@@ -101,6 +103,9 @@ class ViewController: UIViewController, ARSCNViewDelegate {
         // for obstacles 障害物検知 ==========================================================================================================================================
         //let heightsForObstacles = pointCloud.map{$0.y}
         let filteredPointCloud = filterPointCloud(pointCloud, cameraPosition: cameraPosition)
+        self.sceneView.scene.rootNode.addChildNode(createSpearNodeWithStride(pointCloud: filteredPointCloud, color: .red, radius: 0.01))
+        
+        
         
         let heightsForObstacles = filteredPointCloud.map { $0.y }
         let ave = movingAverage(size: 8292)
@@ -126,7 +131,7 @@ class ViewController: UIViewController, ARSCNViewDelegate {
         //}
         
         if obstaclePoints.count > obstacleLimit{
-            self.sceneView.scene.rootNode.addChildNode(createSpearNodeWithStride(pointCloud: obstaclePoints, color: .red, radius: 0.01))
+            //self.sceneView.scene.rootNode.addChildNode(createSpearNodeWithStride(pointCloud: obstaclePoints, color: .red, radius: 0.01))
             DispatchQueue.main.async {
                 self.textHeight.text = "Obstacle points =\(obstaclePoints.count)"
                 self.textObject.text = "Obstacles found"
@@ -161,30 +166,56 @@ class ViewController: UIViewController, ARSCNViewDelegate {
         
         
         //for angle ==========================================================================================================================================
-        
         let angleAverage = movingAverage(size: 5)
-
+        if time - lastSlopeCalculationTime >= slopeCalculationInterval {
+            // 左右の点を定義
+            let horizontalGap: CGFloat = 50 // この値は必要に応じて調整してください
+            let centerIndex = overlayPoints.count / 2
+            let centerPoint = overlayPoints[centerIndex]
+            let leftPoint = CGPoint(x: centerPoint.x - horizontalGap, y: centerPoint.y)
+            let rightPoint = CGPoint(x: centerPoint.x + horizontalGap, y: centerPoint.y)
+            
+            // 左右の点に対してレイキャストを実行
+            let raycastedPointL = self.performRaycast(from: leftPoint)
+            let raycastedPointR = self.performRaycast(from: rightPoint)
+            
+            // 左右の角度を初期化
+            var leftAngle: Float = 0
+            var rightAngle: Float = 0
+            
+            if let pL = raycastedPointL, let pC = self.performRaycast(from: centerPoint) {
+                leftAngle = self.calculateAngle(pC, pL)
+            }
+            if let pR = raycastedPointR, let pC = self.performRaycast(from: centerPoint) {
+                rightAngle = self.calculateAngle(pC, pR)
+            }
+            
             if overlayPoints.count >= 2 {
                 for i in 0..<(overlayPoints.count - 1) {
                     let point1 = self.performRaycast(from: overlayPoints[i])
                     let point2 = self.performRaycast(from: overlayPoints[i + 1])
+                    
                     if let p1 = point1, let p2 = point2 {
                         let angle = self.calculateAngle(p1, p2)
-                        _ = angleAverage.add(angle) // 각도 추가 및 평균 업데이트(角度追加と平均更新)
+                        _ = angleAverage.add(angle) // 각도 추가 및 평균 업데이트
                     }
                 }
             }
-
+            
             let averageAngle = angleAverage.average() // 이동 평균 각도
-
+            
+        
             DispatchQueue.main.async {
-                self.textView.text = "Moving average angle = \(averageAngle)"
+                let combinedText = "angle = \(averageAngle)°\n L: \(leftAngle)°\n R: \(rightAngle)°"
+                self.textView.text = combinedText
             }
+            
+            lastSlopeCalculationTime = time
+        }
 
-
+   }
         
 
-    }
 
 
 
@@ -339,7 +370,9 @@ class ViewController: UIViewController, ARSCNViewDelegate {
         let dz = point2.z - point1.z
         let horizontalDistance = sqrt(dx*dx + dz*dz)
         let angleForFloor = atan2(dy, horizontalDistance)
-        return angleForFloor * (180.0 / .pi)
+        let angleInDegrees = angleForFloor * (180.0 / .pi)
+        
+        return round(angleInDegrees * 10) / 10
     }
 
     func calculateFloorAngle(_ transform: matrix_float4x4) -> Float {
